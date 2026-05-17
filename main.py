@@ -68,7 +68,7 @@ def _resolve(video_id: str) -> str:
         "quiet": True,
         "noplaylist": True,
         "extractor_args": {
-            "youtube": {"player_client": ["ios", "mweb", "tv", "android", "web"]}
+            "youtube": {"player_client": ["web", "android", "ios"]}
         },
     }
     _cf = _cookie_file()
@@ -117,7 +117,7 @@ def _debug(video_id: str) -> dict:
         "quiet": True,
         "noplaylist": True,
         "extractor_args": {
-            "youtube": {"player_client": ["ios", "mweb", "tv", "android", "web"]}
+            "youtube": {"player_client": ["web", "android", "ios"]}
         },
     }
     _cf = _cookie_file()
