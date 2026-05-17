@@ -16,10 +16,10 @@ app.add_middleware(
     expose_headers=["Content-Range", "Accept-Ranges", "Content-Length", "Content-Type"],
 )
 
-# Cache resolved YouTube audio URLs. The googlevideo URLs carry their
-# own multi-hour expiry, so a long cache keeps preloaded skips instant.
+# Cache resolved URLs only briefly. itag 18 progressive URLs go stale
+# fast, so a short TTL keeps playback reliable (proven-good value).
 _cache: dict[str, tuple[str, float]] = {}
-CACHE_TTL = 3600
+CACHE_TTL = 240
 
 
 def _resolve(video_id: str) -> str:
