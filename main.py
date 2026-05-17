@@ -30,32 +30,72 @@ def _resolve(video_id: str) -> str:
 
     ydl_opts = {
         "quiet": True,
-        # Force AAC/m4a — the only audio codec iOS Safari can play.
-        # NOT webm/opus, which YouTube serves by default.
-        "format": "bestaudio[ext=m4a]/bestaudio[acodec^=mp4a]/best[ext=mp4]",
         "noplaylist": True,
         "extractor_args": {
-            "youtube": {"player_client": ["android", "ios", "web"]}
+            "youtube": {"player_client": ["web", "android", "ios"]}
         },
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(
             f"https://www.youtube.com/watch?v={video_id}", download=False
         )
-        url = info.get("url")
-        if not url:
-            m4a = [
-                f for f in info.get("formats", [])
-                if f.get("url")
-                and f.get("acodec", "").startswith("mp4a")
-            ]
-            if m4a:
-                m4a.sort(key=lambda f: f.get("abr") or 0, reverse=True)
-                url = m4a[0]["url"]
 
-    if url:
-        _cache[video_id] = (url, now)
+    formats = info.get("formats", [])
+
+    def is_aac(f):
+        ac = (f.get("acodec") or "")
+        return ac.startswith("mp4a") or ac == "aac"
+
+    # iOS Safari only plays AAC. Pick audio-only AAC, highest bitrate.
+    aac_audio = [
+        f for f in formats
+        if f.get("url") and is_aac(f) and f.get("vcodec") in (None, "none")
+    ]
+    if not aac_audio:
+        # Fall back to any m4a container (still AAC inside)
+        aac_audio = [
+            f for f in formats
+            if f.get("url") and f.get("ext") == "m4a"
+        ]
+    if not aac_audio:
+        # Last resort: progressive mp4 (has AAC audio + video)
+        aac_audio = [
+            f for f in formats
+            if f.get("url") and f.get("ext") == "mp4" and is_aac(f)
+        ]
+
+    if not aac_audio:
+        return None
+
+    aac_audio.sort(key=lambda f: f.get("abr") or f.get("tbr") or 0, reverse=True)
+    url = aac_audio[0]["url"]
+    _cache[video_id] = (url, now)
     return url
+
+
+def _debug(video_id: str) -> dict:
+    ydl_opts = {
+        "quiet": True,
+        "noplaylist": True,
+        "extractor_args": {
+            "youtube": {"player_client": ["web", "android", "ios"]}
+        },
+    }
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(
+            f"https://www.youtube.com/watch?v={video_id}", download=False
+        )
+    out = []
+    for f in info.get("formats", []):
+        if f.get("acodec") not in (None, "none"):
+            out.append({
+                "id": f.get("format_id"),
+                "ext": f.get("ext"),
+                "acodec": f.get("acodec"),
+                "vcodec": f.get("vcodec"),
+                "abr": f.get("abr"),
+            })
+    return {"formats": out}
 
 
 def _search(query: str) -> list:
@@ -105,6 +145,15 @@ async def preload(video_id: str):
         return {"ok": False}
 
 
+@app.get("/debug/{video_id}")
+async def debug(video_id: str):
+    loop = asyncio.get_event_loop()
+    try:
+        return await loop.run_in_executor(None, _debug, video_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/stream/{video_id}")
 async def stream(video_id: str, request: Request):
     loop = asyncio.get_event_loop()
@@ -129,9 +178,10 @@ async def stream(video_id: str, request: Request):
         stream=True,
     )
 
+    # We always select an AAC track, so force the iOS-friendly MIME type.
     resp_headers = {
         "Accept-Ranges": "bytes",
-        "Content-Type": upstream.headers.get("content-type", "audio/mp4"),
+        "Content-Type": "audio/mp4",
         "Cache-Control": "no-cache",
     }
     for h in ("content-length", "content-range"):
@@ -150,5 +200,5 @@ async def stream(video_id: str, request: Request):
         body(),
         status_code=upstream.status_code,
         headers=resp_headers,
-        media_type=resp_headers["Content-Type"],
+        media_type="audio/mp4",
     )
