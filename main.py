@@ -158,29 +158,52 @@ async def debug(video_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/stream/{video_id}")
-async def stream(video_id: str, request: Request):
-    loop = asyncio.get_event_loop()
-    try:
-        audio_url = await loop.run_in_executor(None, _resolve, video_id)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-    if not audio_url:
-        raise HTTPException(status_code=404, detail="Audio not found")
-
-    # Single clean proxy: forward the client's Range header, and pass
-    # YouTube's response status + headers straight back to the client.
-    fwd = {}
-    range_header = request.headers.get("range")
-    if range_header:
-        fwd["Range"] = range_header
-
+async def _open_upstream(audio_url: str, fwd: dict):
     client = httpx.AsyncClient(timeout=None, follow_redirects=True)
     upstream = await client.send(
         client.build_request("GET", audio_url, headers=fwd),
         stream=True,
     )
+    return client, upstream
+
+
+@app.get("/stream/{video_id}")
+async def stream(video_id: str, request: Request):
+    loop = asyncio.get_event_loop()
+
+    fwd = {}
+    range_header = request.headers.get("range")
+    if range_header:
+        fwd["Range"] = range_header
+
+    try:
+        audio_url = await loop.run_in_executor(None, _resolve, video_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    if not audio_url:
+        raise HTTPException(status_code=404, detail="Audio not found")
+
+    client, upstream = await _open_upstream(audio_url, fwd)
+
+    # itag 18 URLs die fast and unpredictably. If the cached URL is
+    # dead (any non-streaming status), drop it, resolve a FRESH one,
+    # and retry once — so the client never receives a broken stream.
+    if upstream.status_code not in (200, 206):
+        await upstream.aclose()
+        await client.aclose()
+        _cache.pop(video_id, None)
+        try:
+            audio_url = await loop.run_in_executor(None, _resolve, video_id)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+        if not audio_url:
+            raise HTTPException(status_code=404, detail="Audio not found")
+        client, upstream = await _open_upstream(audio_url, fwd)
+
+    if upstream.status_code not in (200, 206):
+        await upstream.aclose()
+        await client.aclose()
+        raise HTTPException(status_code=502, detail="Upstream unavailable")
 
     # We always select an AAC track, so force the iOS-friendly MIME type.
     resp_headers = {
