@@ -67,6 +67,10 @@ def _resolve(video_id: str) -> str:
     ydl_opts = {
         "quiet": True,
         "noplaylist": True,
+        # Explicitly want AUDIO ONLY. Without this, yt-dlp's default
+        # tries to merge separate video+audio (needs ffmpeg, not
+        # installed) and fails once cookies unlock the full format set.
+        "format": "bestaudio[ext=m4a]/bestaudio/best",
         "extractor_args": {
             "youtube": {"player_client": ["web", "android", "ios"]}
         },
@@ -116,6 +120,10 @@ def _debug(video_id: str) -> dict:
     ydl_opts = {
         "quiet": True,
         "noplaylist": True,
+        # Explicitly want AUDIO ONLY. Without this, yt-dlp's default
+        # tries to merge separate video+audio (needs ffmpeg, not
+        # installed) and fails once cookies unlock the full format set.
+        "format": "bestaudio[ext=m4a]/bestaudio/best",
         "extractor_args": {
             "youtube": {"player_client": ["web", "android", "ios"]}
         },
