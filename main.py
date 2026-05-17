@@ -16,9 +16,10 @@ app.add_middleware(
     expose_headers=["Content-Range", "Accept-Ranges", "Content-Length", "Content-Type"],
 )
 
-# Cache resolved YouTube audio URLs for 4 minutes
+# Cache resolved YouTube audio URLs. The googlevideo URLs carry their
+# own multi-hour expiry, so a long cache keeps preloaded skips instant.
 _cache: dict[str, tuple[str, float]] = {}
-CACHE_TTL = 240
+CACHE_TTL = 3600
 
 
 def _resolve(video_id: str) -> str:
