@@ -1,4 +1,6 @@
 import asyncio
+import os
+import tempfile
 import time
 import httpx
 import yt_dlp
@@ -21,6 +23,26 @@ app.add_middleware(
 _cache: dict[str, tuple[str, float]] = {}
 CACHE_TTL = 240
 
+# YouTube cookies (Netscape format) supplied via the YT_COOKIES env
+# var (a Railway secret — never committed to the repo). Authenticated
+# requests unlock the audio-only itag 140 track and stop datacenter
+# throttling. Written to a temp file once for yt-dlp's cookiefile.
+_cookie_path: str | None = None
+
+
+def _cookie_file() -> str | None:
+    global _cookie_path
+    if _cookie_path:
+        return _cookie_path
+    data = os.environ.get("YT_COOKIES")
+    if not data:
+        return None
+    path = os.path.join(tempfile.gettempdir(), "yt_cookies.txt")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(data)
+    _cookie_path = path
+    return path
+
 
 def _resolve(video_id: str) -> str:
     now = time.time()
@@ -36,6 +58,9 @@ def _resolve(video_id: str) -> str:
             "youtube": {"player_client": ["ios", "mweb", "tv", "android", "web"]}
         },
     }
+    _cf = _cookie_file()
+    if _cf:
+        ydl_opts["cookiefile"] = _cf
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(
             f"https://www.youtube.com/watch?v={video_id}", download=False
@@ -82,6 +107,9 @@ def _debug(video_id: str) -> dict:
             "youtube": {"player_client": ["ios", "mweb", "tv", "android", "web"]}
         },
     }
+    _cf = _cookie_file()
+    if _cf:
+        ydl_opts["cookiefile"] = _cf
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(
             f"https://www.youtube.com/watch?v={video_id}", download=False
@@ -105,6 +133,9 @@ def _search(query: str) -> list:
         "extract_flat": True,
         "noplaylist": True,
     }
+    _cf = _cookie_file()
+    if _cf:
+        ydl_opts["cookiefile"] = _cf
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(f"ytsearch10:{query}", download=False)
         results = []
