@@ -94,21 +94,27 @@ def _resolve(video_id: str) -> str | None:
 
 
 def _debug(video_id: str) -> dict:
-    with yt_dlp.YoutubeDL(_ydl_opts()) as ydl:
+    # process=False skips yt-dlp's format SELECTION, so it never raises
+    # "Requested format is not available" — we get the raw inventory of
+    # every format YouTube actually returned (with cookies applied).
+    opts = _ydl_opts()
+    opts.pop("format", None)
+    with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(
-            f"https://www.youtube.com/watch?v={video_id}", download=False
+            f"https://www.youtube.com/watch?v={video_id}",
+            download=False,
+            process=False,
         )
     out = []
     for f in info.get("formats", []):
-        if f.get("acodec") not in (None, "none"):
-            out.append({
-                "id": f.get("format_id"),
-                "ext": f.get("ext"),
-                "acodec": f.get("acodec"),
-                "vcodec": f.get("vcodec"),
-                "abr": f.get("abr"),
-            })
-    return {"formats": out, "selected": info.get("format_id")}
+        out.append({
+            "id": f.get("format_id"),
+            "ext": f.get("ext"),
+            "acodec": f.get("acodec"),
+            "vcodec": f.get("vcodec"),
+            "abr": f.get("abr"),
+        })
+    return {"count": len(out), "formats": out}
 
 
 def _search(query: str) -> list:
