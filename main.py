@@ -4,7 +4,7 @@ import httpx
 import yt_dlp
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, Response
+from fastapi.responses import StreamingResponse
 
 app = FastAPI()
 
@@ -30,7 +30,9 @@ def _resolve(video_id: str) -> str:
 
     ydl_opts = {
         "quiet": True,
-        "format": "bestaudio/best",
+        # Force AAC/m4a — the only audio codec iOS Safari can play.
+        # NOT webm/opus, which YouTube serves by default.
+        "format": "bestaudio[ext=m4a]/bestaudio[acodec^=mp4a]/best[ext=mp4]",
         "noplaylist": True,
         "extractor_args": {
             "youtube": {"player_client": ["android", "ios", "web"]}
@@ -42,20 +44,14 @@ def _resolve(video_id: str) -> str:
         )
         url = info.get("url")
         if not url:
-            audio_formats = [
+            m4a = [
                 f for f in info.get("formats", [])
-                if f.get("url") and f.get("acodec") not in (None, "none")
+                if f.get("url")
+                and f.get("acodec", "").startswith("mp4a")
             ]
-            if audio_formats:
-                # Prefer audio-only, then highest bitrate
-                audio_formats.sort(
-                    key=lambda f: (
-                        f.get("vcodec") in (None, "none"),
-                        f.get("abr") or 0,
-                    ),
-                    reverse=True,
-                )
-                url = audio_formats[0]["url"]
+            if m4a:
+                m4a.sort(key=lambda f: f.get("abr") or 0, reverse=True)
+                url = m4a[0]["url"]
 
     if url:
         _cache[video_id] = (url, now)
@@ -101,7 +97,6 @@ async def search(q: str):
 
 @app.get("/preload/{video_id}")
 async def preload(video_id: str):
-    """Warm the cache so /stream responds instantly."""
     loop = asyncio.get_event_loop()
     try:
         await loop.run_in_executor(None, _resolve, video_id)
@@ -121,46 +116,39 @@ async def stream(video_id: str, request: Request):
     if not audio_url:
         raise HTTPException(status_code=404, detail="Audio not found")
 
+    # Single clean proxy: forward the client's Range header, and pass
+    # YouTube's response status + headers straight back to the client.
+    fwd = {}
     range_header = request.headers.get("range")
-    upstream_headers = {}
     if range_header:
-        upstream_headers["Range"] = range_header
+        fwd["Range"] = range_header
 
-    async def generator():
-        async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
-            async with client.stream("GET", audio_url, headers=upstream_headers) as resp:
-                # Send headers on first chunk
-                async for chunk in resp.aiter_bytes(65536):
-                    yield chunk
-
-    # Get headers quickly with a HEAD-like partial request
-    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
-        head = await client.get(
-            audio_url,
-            headers={**upstream_headers, "Range": range_header or "bytes=0-0"},
-        )
-
-    content_type = head.headers.get("content-type", "audio/mp4")
-    resp_status = 206 if range_header else 200
+    client = httpx.AsyncClient(timeout=None, follow_redirects=True)
+    upstream = await client.send(
+        client.build_request("GET", audio_url, headers=fwd),
+        stream=True,
+    )
 
     resp_headers = {
         "Accept-Ranges": "bytes",
-        "Content-Type": content_type,
+        "Content-Type": upstream.headers.get("content-type", "audio/mp4"),
         "Cache-Control": "no-cache",
     }
-    if "content-range" in head.headers:
-        # Extract total size from content-range: bytes 0-0/TOTAL
-        cr = head.headers["content-range"]
-        total = cr.split("/")[-1]
-        if range_header:
-            resp_headers["Content-Range"] = f"{range_header.replace('bytes=', 'bytes ')}/{total}"
-        resp_headers["Content-Length"] = total
-    elif "content-length" in head.headers:
-        resp_headers["Content-Length"] = head.headers["content-length"]
+    for h in ("content-length", "content-range"):
+        if h in upstream.headers:
+            resp_headers[h.title()] = upstream.headers[h]
+
+    async def body():
+        try:
+            async for chunk in upstream.aiter_bytes(65536):
+                yield chunk
+        finally:
+            await upstream.aclose()
+            await client.aclose()
 
     return StreamingResponse(
-        generator(),
-        status_code=resp_status,
+        body(),
+        status_code=upstream.status_code,
         headers=resp_headers,
-        media_type=content_type,
+        media_type=resp_headers["Content-Type"],
     )
