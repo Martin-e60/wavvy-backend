@@ -81,10 +81,5 @@ async def stream(video_id: str):
     if not audio_url:
         raise HTTPException(status_code=404, detail="Audio not found")
 
-    async def generator():
-        async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
-            async with client.stream("GET", audio_url) as resp:
-                async for chunk in resp.aiter_bytes(8192):
-                    yield chunk
-
-    return StreamingResponse(generator(), media_type="audio/mp4")
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url=audio_url, status_code=302)
