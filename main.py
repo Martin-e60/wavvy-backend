@@ -114,12 +114,15 @@ def _search(query: str) -> list:
                 dur_str = f"{m}:{s:02d}"
             else:
                 dur_str = ""
+            vid = entry.get("id")
             results.append({
-                "id": entry.get("id"),
+                "id": vid,
                 "title": entry.get("title"),
                 "channel": entry.get("channel") or entry.get("uploader", ""),
                 "duration": dur_str,
-                "thumbnail": entry.get("thumbnail", ""),
+                # Derive thumbnail directly from the video ID — always works,
+                # unlike the flat-extract thumbnail which is often empty.
+                "thumbnail": f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg",
             })
         return results
 
