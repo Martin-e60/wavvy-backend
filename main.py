@@ -33,7 +33,7 @@ def _resolve(video_id: str) -> str:
         "quiet": True,
         "noplaylist": True,
         "extractor_args": {
-            "youtube": {"player_client": ["web", "android", "ios"]}
+            "youtube": {"player_client": ["ios", "mweb", "tv", "android", "web"]}
         },
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -79,7 +79,7 @@ def _debug(video_id: str) -> dict:
         "quiet": True,
         "noplaylist": True,
         "extractor_args": {
-            "youtube": {"player_client": ["web", "android", "ios"]}
+            "youtube": {"player_client": ["ios", "mweb", "tv", "android", "web"]}
         },
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -183,12 +183,26 @@ async def stream(video_id: str, request: Request):
     if not audio_url:
         raise HTTPException(status_code=404, detail="Audio not found")
 
+    def is_bad(resp):
+        # Dead status OR a throttled/blocked response that returns 200
+        # but with an HTML error page instead of real media bytes.
+        if resp.status_code not in (200, 206):
+            return True
+        ct = resp.headers.get("content-type", "").lower()
+        if ct and not (
+            ct.startswith("audio/")
+            or ct.startswith("video/")
+            or "octet-stream" in ct
+        ):
+            return True
+        return False
+
     client, upstream = await _open_upstream(audio_url, fwd)
 
-    # itag 18 URLs die fast and unpredictably. If the cached URL is
-    # dead (any non-streaming status), drop it, resolve a FRESH one,
-    # and retry once — so the client never receives a broken stream.
-    if upstream.status_code not in (200, 206):
+    # itag 18 URLs die fast / get throttled. If the response is dead or
+    # not real media, drop the cached URL, resolve a FRESH one, and
+    # retry once — so the client never receives a broken stream.
+    if is_bad(upstream):
         await upstream.aclose()
         await client.aclose()
         _cache.pop(video_id, None)
@@ -200,7 +214,7 @@ async def stream(video_id: str, request: Request):
             raise HTTPException(status_code=404, detail="Audio not found")
         client, upstream = await _open_upstream(audio_url, fwd)
 
-    if upstream.status_code not in (200, 206):
+    if is_bad(upstream):
         await upstream.aclose()
         await client.aclose()
         raise HTTPException(status_code=502, detail="Upstream unavailable")
