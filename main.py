@@ -1,9 +1,9 @@
 import asyncio
 import httpx
 import yt_dlp
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response
 
 app = FastAPI()
 
@@ -11,7 +11,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_methods=["*"],
-    allow_headers=["*"],
+    allow_headers=["*", "Range"],
+    expose_headers=["Content-Range", "Accept-Ranges", "Content-Length"],
 )
 
 
@@ -71,7 +72,7 @@ async def search(q: str):
 
 
 @app.get("/stream/{video_id}")
-async def stream(video_id: str):
+async def stream(video_id: str, request: Request):
     loop = asyncio.get_event_loop()
     try:
         audio_url = await loop.run_in_executor(None, _get_audio_url, video_id)
@@ -81,5 +82,30 @@ async def stream(video_id: str):
     if not audio_url:
         raise HTTPException(status_code=404, detail="Audio not found")
 
-    from fastapi.responses import RedirectResponse
-    return RedirectResponse(url=audio_url, status_code=302)
+    # Forward Range header from iOS so it can seek/buffer properly
+    upstream_headers = {}
+    range_header = request.headers.get("range")
+    if range_header:
+        upstream_headers["Range"] = range_header
+
+    async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
+        upstream = await client.get(audio_url, headers=upstream_headers)
+
+    content_type = upstream.headers.get("content-type", "audio/mp4")
+
+    resp_headers = {
+        "Accept-Ranges": "bytes",
+        "Content-Type": content_type,
+        "Cache-Control": "no-cache",
+    }
+    if "content-length" in upstream.headers:
+        resp_headers["Content-Length"] = upstream.headers["content-length"]
+    if "content-range" in upstream.headers:
+        resp_headers["Content-Range"] = upstream.headers["content-range"]
+
+    return Response(
+        content=upstream.content,
+        status_code=upstream.status_code,
+        headers=resp_headers,
+        media_type=content_type,
+    )
