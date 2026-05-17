@@ -30,8 +30,11 @@ def _resolve(video_id: str) -> str:
 
     ydl_opts = {
         "quiet": True,
-        "format": "bestaudio[ext=m4a]/bestaudio/best",
+        "format": "bestaudio/best",
         "noplaylist": True,
+        "extractor_args": {
+            "youtube": {"player_client": ["android", "ios", "web"]}
+        },
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(
@@ -39,10 +42,20 @@ def _resolve(video_id: str) -> str:
         )
         url = info.get("url")
         if not url:
-            for fmt in reversed(info.get("formats", [])):
-                if fmt.get("url") and fmt.get("acodec") != "none":
-                    url = fmt["url"]
-                    break
+            audio_formats = [
+                f for f in info.get("formats", [])
+                if f.get("url") and f.get("acodec") not in (None, "none")
+            ]
+            if audio_formats:
+                # Prefer audio-only, then highest bitrate
+                audio_formats.sort(
+                    key=lambda f: (
+                        f.get("vcodec") in (None, "none"),
+                        f.get("abr") or 0,
+                    ),
+                    reverse=True,
+                )
+                url = audio_formats[0]["url"]
 
     if url:
         _cache[video_id] = (url, now)
