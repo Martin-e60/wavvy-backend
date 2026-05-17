@@ -37,9 +37,22 @@ def _cookie_file() -> str | None:
     data = os.environ.get("YT_COOKIES")
     if not data:
         return None
+
+    data = data.strip()
+    # Accept base64 (safe single-line, survives env vars intact) OR
+    # raw Netscape text. Decode base64 if it isn't already cookie text.
+    if "# Netscape" not in data and "\t" not in data:
+        try:
+            import base64
+            decoded = base64.b64decode(data, validate=True).decode("utf-8")
+            if "# Netscape" in decoded or "\t" in decoded:
+                data = decoded
+        except Exception:
+            pass
+
     path = os.path.join(tempfile.gettempdir(), "yt_cookies.txt")
     with open(path, "w", encoding="utf-8") as f:
-        f.write(data)
+        f.write(data if data.endswith("\n") else data + "\n")
     _cookie_path = path
     return path
 
