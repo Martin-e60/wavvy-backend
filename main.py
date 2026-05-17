@@ -6,7 +6,7 @@ import httpx
 import yt_dlp
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import RedirectResponse
 
 app = FastAPI()
 
@@ -173,9 +173,13 @@ async def debug(video_id: str):
 
 # ── The known-good proxy: simple single-request stream, force the
 # iOS-friendly MIME type, pass Range through. No self-healing layer
-# (that was added during the breakage and never helped iOS).
+# Redirect the client straight to Google's CDN instead of proxying
+# bytes. iOS Safari + Google's media servers is the exact combo
+# YouTube itself uses — range requests, content-length and seeking
+# all handled by Google, not our fragile proxy. This removes every
+# proxy behavior that iOS was rejecting with "src not supported".
 @app.get("/stream/{video_id}")
-async def stream(video_id: str, request: Request):
+async def stream(video_id: str):
     loop = asyncio.get_event_loop()
     try:
         audio_url = await loop.run_in_executor(None, _resolve, video_id)
@@ -184,37 +188,4 @@ async def stream(video_id: str, request: Request):
     if not audio_url:
         raise HTTPException(status_code=404, detail="Audio not found")
 
-    fwd = {}
-    range_header = request.headers.get("range")
-    if range_header:
-        fwd["Range"] = range_header
-
-    client = httpx.AsyncClient(timeout=None, follow_redirects=True)
-    upstream = await client.send(
-        client.build_request("GET", audio_url, headers=fwd),
-        stream=True,
-    )
-
-    resp_headers = {
-        "Accept-Ranges": "bytes",
-        "Content-Type": "audio/mp4",
-        "Cache-Control": "no-cache",
-    }
-    for h in ("content-length", "content-range"):
-        if h in upstream.headers:
-            resp_headers[h.title()] = upstream.headers[h]
-
-    async def body():
-        try:
-            async for chunk in upstream.aiter_bytes(65536):
-                yield chunk
-        finally:
-            await upstream.aclose()
-            await client.aclose()
-
-    return StreamingResponse(
-        body(),
-        status_code=upstream.status_code,
-        headers=resp_headers,
-        media_type="audio/mp4",
-    )
+    return RedirectResponse(url=audio_url, status_code=302)
